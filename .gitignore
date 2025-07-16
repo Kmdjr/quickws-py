@@ -1,0 +1,22 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.so
+
+# VSCode settings
+.vscode/
+
+# Virtual environments
+.venv/
+env/
+*.env
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
+
+# Logs and system files
+*.log
+.DS_Store
+Thumbs.db

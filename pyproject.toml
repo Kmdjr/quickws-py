@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickws"
+version = "0.1.0"
+description = "QuickWS is a lightweight, cross-version-compatible WebSocket layer inspired by Socket.IO."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "Your Name", email = "you@example.com" }
+]
+dependencies = [
+  "websockets>=11.0",
+  "websocket-client"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/QuickWS"
+Documentation = "https://github.com/yourusername/QuickWS#readme"
