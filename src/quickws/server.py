@@ -5,13 +5,14 @@ from typing import Callable, Optional, Union
 import inspect
 from .server_user import ConnectedUser as User
 from .logger import Logger
-from .utils import build_msg, fail_operation_close_ws as op_fail, check_for_pass as check_pass, setup_server_params, resolve_uid
+from .utils import build_msg, fail_operation_close_ws as op_fail, check_for_pass as check_pass, setup_server_params, resolve_uid, CancelProcessing, maybe_await
 from .hook_manager import HookManager, ninf
 from .pluginsmanager import PluginManager
 from .server_hooks import register_hooks
 from .msg_context import Message as msgctx
-from .user_data_class import userData as DataClass
+from .data_class import Data
 from .ack_handler import AckInstance
+
 
 class Server:
     def __init__(self, 
@@ -24,7 +25,7 @@ class Server:
         self._serve = None
         self.host:str = uri
         self.port:int|str = port
-        self.settings:DataClass = setup_server_params(starting_settings=starting_server_settings)
+        self.settings:Data = setup_server_params(starting_settings=starting_server_settings)
         
         # Connected Clients and Handlers for them
 
@@ -38,13 +39,30 @@ class Server:
         #ack handlers:
         self._acks:dict[str,AckInstance] = {}
 
+        #monkey patch for auto inject fail in all hooks:
+        orig_triggers = (self.hooks.trigger, self.hooks.trigger_collect)
+        async def trigger_with_fail(hook_type,name=None,*args,**kwargs):
+            kwargs.setdefault("fail",self.fail)
+            return await orig_triggers[0](hook_type=hook_type,name=name,*args,**kwargs)
+        self.hooks.trigger = trigger_with_fail
+        async def collect_with_fail(hook_type,name=None,*args,**kwargs):
+            kwargs.setdefault("fail",self.fail)
+            return await orig_triggers[1](hook_type=hook_type,name=name,*args,**kwargs)
+        self.hooks.trigger_collect = collect_with_fail
+
         register_hooks(self)
         if plugin_dirs:
             pm:PluginManager = PluginManager(plugindirs=plugin_dirs)
             pm.load(self)
 
-        
-
+    
+    def fail(self,raise_msg:str=None,reason:str=None,on_fail:Callable=None,errcode:str="[Failed Error]",Object:object=None):
+        Error:CancelProcessing = CancelProcessing(raise_msg=raise_msg,reason=reason,errcode=errcode,obj=Object)
+        if on_fail:
+            coro = maybe_await(on_fail,Error)
+            if inspect.iscoroutine(coro):
+                asyncio.create_task(coro)
+        raise Error
 
     def hook(self,*,hook_type:str,name:Optional[str]=None,priority:int=0,interval:Optional[float]=None,once:bool=False):
         return self.hooks.register(hook_type=hook_type,name=name,priority=priority,interval=interval,once=once)
@@ -92,6 +110,10 @@ class Server:
             name=event_name,
             priority=0
         )
+    
+    async def ws_send(self,ws,cp:CancelProcessing):
+        # Do WS Send for Non-UID communication
+        pass
 
     async def send(
             self,
@@ -108,7 +130,7 @@ class Server:
         if not ack:
             for uid in targets:
                 user = self.getuser(uid=uid)
-                msg = build_msg(event=event_name,data=data,sender=sender,to=user)
+                msg = build_msg(event=event_name,data=data,sender=sender,to=user.uid)
                 if user and msg: 
                     await user.send(msg)
             return None
@@ -122,7 +144,7 @@ class Server:
             self._acks[inst.ack_id] = inst
             inst.start_timeout(self._acks)
             from copy import deepcopy
-            payload = build_msg(event=event_name,data=data,sender=sender,to=user,ack_id=inst.ack_id)
+            payload = build_msg(event=event_name,data=data,sender=sender,to=user.uid,ack_id=inst.ack_id)
             if not payload:
                 continue
             ack_map[uid] = inst
@@ -134,56 +156,72 @@ class Server:
             results[uid] = res
         return results
 
-    async def _user_connecting_handler(self,msg,ws):
+    async def _user_connecting_handler(self,msg:msgctx,ws):
         data = msg.data
         uid = data.get("uid")
         if uid:
             ## Reconnection Logic ##
             pass
         async with self._connect_lock:
-        #max_client_check:
+            #max_client_check:
             if self.settings.max_users > 0 and len(self.users) >= self.settings.max_users:
-                print("Max Users Reached!")
-                return ## DO RESPONSE FOR MAX SERVER LOGIC HERE ##
+                self.fail(f"Server Full ({self.settings.max_users}) users.",reason="max_users_reached",)
             uid = resolve_uid(uid,self.hooks,self.get_uids(),
                 self.settings.custom_uid, self.settings.uid_len,self.settings.allowed_uid_chars,self.settings.uid_generation_tries
             )
             if uid == "__ERROR__":
                 return #DO RESPONSE FOR FAILED GENERATION OF UID
+            msg.uid = uid
+            user_data = msg.data.get()
             user = User(uid,ws)
             await self.hooks.trigger("user_creation",None,user)
             self.users.append(user)
             print(f"[+] Client Registered: {user.uid}")
             await self.hooks.trigger("user_connected",None,user)
 
-    async def _message_handler(self,uid:str|None,raw:str,ws):
+    async def _message_handler(self,raw,ws):
         ip, port = ws.remote_address 
-        raw_on_results = await self.hooks.trigger_collect("raw_incoming",None,raw,ws,ip,port,uid)
-        if check_pass(raw_on_results,False,lambda: print(f"raw_incoming hook rejected message.")):return
+        msg:msgctx = msgctx(raw_msg=raw,host=self,ws=ws,ip=ip,port=port)
         try:
-            msg:msgctx = msgctx(raw)
-            if msg.event == "_UserConnected" and "uid" in msg.data.keys():
-                try:
-                    uid = await self._user_connecting_handler(msg,ws)
-                except:
-                    print("Failed User Registration")
-                    return
-        except:
-            print("Failed to parse or construct msgctx class from raw msg.")
-            return
-        await self.hooks.trigger("pre_on",None,msg)
-        if msg.rejected:
-            print(f"Message was Rejected from pre_on hook. Reason: {msg.reject_reason}")
-            return
-        if msg.event in ["_UserConnected"]:
-            await self.hooks.trigger(msg.event,None,msg)
-            if msg.rejected:
-                print(f"Message was Rejected from pre_on hook. Reason: {msg.reject_reason}")
-                return
-        else:
-            await self.hooks.trigger("on_event",msg.event,msg)
+            await self.hooks.trigger("raw_incoming",None,msg)
+            msg.decode()
+            if msg.event == "_UserConnected" and "uid" in msg.data:
+                await self._user_connecting_handler(msg,ws)
+            else:
+                await self.hooks.trigger("pre_on",None,msg)
+                await self.hooks.trigger("on_event",msg.event,msg)
+        except CancelProcessing as cp:
+            self.log(f"Dropped message: {cp}",log_lvl=2)
         
-        pass
+
+
+
+        # raw_on_results = await self.hooks.trigger_collect("raw_incoming",None,raw,ws,ip,port,uid)
+        # if check_pass(raw_on_results,False,lambda: print(f"raw_incoming hook rejected message.")):return
+        # try:
+        #     msg:msgctx = msgctx(raw)
+        #     if msg.event == "_UserConnected" and "uid" in msg.data.keys():
+        #         try:
+        #             uid = await self._user_connecting_handler(msg,ws)
+        #         except:
+        #             print("Failed User Registration")
+        #             return
+        # except:
+        #     print("Failed to parse or construct msgctx class from raw msg.")
+        #     return
+        # await self.hooks.trigger("pre_on",None,msg)
+        # if msg.rejected:
+        #     print(f"Message was Rejected from pre_on hook. Reason: {msg.reject_reason}")
+        #     return
+        # if msg.event in ["_UserConnected"]:
+        #     await self.hooks.trigger(msg.event,None,msg)
+        #     if msg.rejected:
+        #         print(f"Message was Rejected from pre_on hook. Reason: {msg.reject_reason}")
+        #         return
+        # else:
+        #     await self.hooks.trigger("on_event",msg.event,msg)
+        
+        # pass
     
     async def _disconnected_user_handler(self,uid,ws,user):
         user.connected = False
@@ -194,16 +232,15 @@ class Server:
         try:
             raw = await asyncio.wait_for(ws.recv(),timeout=10)
         except asyncio.TimeoutError:
-            return op_fail(ws,"TIMEOUT ERROR")
-        await self._message_handler(uid=None,raw=raw,ws=ws)
+            return
+        await self._message_handler(raw=raw,ws=ws)
         
         user = self.getuser(ws=ws)
         if not user:
-            return op_fail(ws,"USER GET","No User with "+str(ws))
+            return
         uid = user.uid
         if not uid:
-            return op_fail(ws,"UID GET",f"User: {str(user)} has no assigned UID")
-        
+            return
         try:
             async for raw in ws:
                 await self._message_handler(uid=uid,raw=raw,ws=ws)
@@ -234,4 +271,3 @@ class Server:
                     await asyncio.sleep(e.interval)
             asyncio.create_task(runner())
         return self._serve
-

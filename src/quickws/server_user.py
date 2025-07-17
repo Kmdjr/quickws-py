@@ -1,5 +1,5 @@
 import asyncio
-from .user_data_class import userData as Data
+from .data_class import Data
 
 class ConnectedUser:
     def __init__(self,uid:str,ws,user_data:dict={}):

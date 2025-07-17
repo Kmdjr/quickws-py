@@ -4,6 +4,7 @@ import inspect
 from collections import defaultdict
 from typing import Callable, Optional, Tuple, List, Any
 import math
+from .utils import maybe_await, CancelProcessing
 
 ninf:float = -math.inf
 
@@ -15,17 +16,18 @@ class HookEntry:
     callback:Callable = field(compare=False) #
     interval:Optional[float] = field(default=None,compare=False) #only for loop hooks
     oneshot:bool = field(default=False,compare=False) #for one shots
+    on_fail:Optional[Callable] = field(default=None,compare=False)
 
 class HookManager:
     def __init__(self):
         self._hooks = defaultdict(list) # hook_type ==> list[HookEntry]
         self.builtin_hook_types = ["loop","oneshot","pre_on","pre_send","on_event","raw_incoming"]
     
-    def register(self, *, hook_type:str,name:Optional[str]=None,priority:int=0,interval:Optional[float]=None,oneshot:bool=False):
+    def register(self, *, hook_type:str,name:Optional[str]=None,priority:int=0,interval:Optional[float]=None,oneshot:bool=False,on_fail:Callable=None):
         if not self._register_check(hook_type=hook_type,name=name,interval=interval,oneshot=oneshot):
             return
         def wrapper(fn:Callable):
-            entry = HookEntry(priority=priority,hook_type=hook_type,name=name,callback=fn,interval=interval,oneshot=oneshot)
+            entry = HookEntry(priority=priority,hook_type=hook_type,name=name,callback=fn,interval=interval,oneshot=oneshot,on_fail=on_fail)
             self._hooks[hook_type].append(entry)
             self._hooks[hook_type].sort()
             return fn
@@ -70,6 +72,10 @@ class HookManager:
                     result = entry.callback(*f_args, **f_kwargs)
                     if inspect.iscoroutine(result):
                         await result
+                except CancelProcessing as cp:
+                    if entry.on_fail:
+                        await maybe_await(entry.on_fail,cp)
+                    raise
                 except TypeError as te:
                     # missing required arg or other signature mismatch
                     print(f"[Hook ERROR] {entry.callback.__name__} signature mismatch: {te}")
@@ -121,6 +127,10 @@ class HookManager:
                 res = entry.callback(*f_args, **f_kwargs)
                 if inspect.iscoroutine(res):
                     res = await res
+            except CancelProcessing as cp:
+                if entry.on_fail:
+                    await maybe_await(entry.on_fail,cp)
+                raise
             except TypeError as te:
                 print(f"[Hook ERROR] {entry.callback.__name__} signature mismatch: {te}")
                 res = None

@@ -3,4 +3,11 @@ from .hook_manager import ninf
 from .msg_context import Message
 
 def register_hooks(server:Server):
+    @server.hook(hook_type="uid_validation",name=None,priority=ninf)
+    async def builtin_uid_validation(msg_ctx,uid):
+        from .utils import gen_id
+        generated = False
+        if not uid:
+            uid = None
+            # Finish UID validation hook
     pass
