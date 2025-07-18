@@ -1,5 +1,7 @@
 import asyncio
 
+### Depreciated - Old Data Class
+
 class userData:
     """
     A flexible container class for storing user-defined attributes.

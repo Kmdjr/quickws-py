@@ -192,36 +192,6 @@ class Server:
                 await self.hooks.trigger("on_event",msg.event,msg)
         except CancelProcessing as cp:
             self.log(f"Dropped message: {cp}",log_lvl=2)
-        
-
-
-
-        # raw_on_results = await self.hooks.trigger_collect("raw_incoming",None,raw,ws,ip,port,uid)
-        # if check_pass(raw_on_results,False,lambda: print(f"raw_incoming hook rejected message.")):return
-        # try:
-        #     msg:msgctx = msgctx(raw)
-        #     if msg.event == "_UserConnected" and "uid" in msg.data.keys():
-        #         try:
-        #             uid = await self._user_connecting_handler(msg,ws)
-        #         except:
-        #             print("Failed User Registration")
-        #             return
-        # except:
-        #     print("Failed to parse or construct msgctx class from raw msg.")
-        #     return
-        # await self.hooks.trigger("pre_on",None,msg)
-        # if msg.rejected:
-        #     print(f"Message was Rejected from pre_on hook. Reason: {msg.reject_reason}")
-        #     return
-        # if msg.event in ["_UserConnected"]:
-        #     await self.hooks.trigger(msg.event,None,msg)
-        #     if msg.rejected:
-        #         print(f"Message was Rejected from pre_on hook. Reason: {msg.reject_reason}")
-        #         return
-        # else:
-        #     await self.hooks.trigger("on_event",msg.event,msg)
-        
-        # pass
     
     async def _disconnected_user_handler(self,uid,ws,user):
         user.connected = False
